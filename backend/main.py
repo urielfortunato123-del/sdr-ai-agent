@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlmodel import Session, select
-from .database import engine, create_db_and_tables, get_session, Lead, LeadAnalysis
-from .services_google import search_leads
-from .services_ai import analyze_lead
+from database import engine, create_db_and_tables, get_session, Lead, LeadAnalysis
+from services_google import search_leads
+from services_ai import analyze_lead
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
