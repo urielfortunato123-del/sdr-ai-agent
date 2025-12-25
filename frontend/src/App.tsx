@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react'
 import './App.css'
 
+interface Analysis {
+  score: number;
+  potential_level: 'baixo' | 'medio' | 'alto' | 'erro';
+  marketing_diagnosis: string;
+  generated_message: string;
+}
+
 interface Lead {
   id: number;
   name: string;
@@ -9,13 +16,6 @@ interface Lead {
   rating?: number;
   reviews_count?: number;
   analysis?: Analysis;
-}
-
-interface Analysis {
-  score: number;
-  potential_level: string;
-  marketing_diagnosis: string;
-  generated_message: string;
 }
 
 function App() {
@@ -45,8 +45,8 @@ function App() {
 
   const handleAnalyze = async (id: number) => {
     const res = await fetch(`http://localhost:8000/leads/${id}/analyze`, { method: 'POST' })
-    const analysis = await res.json()
-    setLeads(leads.map(l => l.id === id ? { ...l, analysis } : l))
+    const analysis: Analysis = await res.json()
+    setLeads(leads.map((l: Lead) => l.id === id ? { ...l, analysis } : l))
   }
 
   return (
@@ -59,10 +59,10 @@ function App() {
       </header>
 
       <div className="search-bar">
-        <input 
-          placeholder="Ex: Advogados em Bauru..." 
+        <input
+          placeholder="Ex: Advogados em Bauru..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
         />
         <button onClick={handleSearch} disabled={loading}>
           {loading ? 'Buscando...' : 'Coletar Leads'}
@@ -70,7 +70,7 @@ function App() {
       </div>
 
       <div className="lead-grid">
-        {leads.map(lead => (
+        {leads.map((lead: Lead) => (
           <div key={lead.id} className="lead-card">
             <div className="lead-header">
               <div className="lead-title">
