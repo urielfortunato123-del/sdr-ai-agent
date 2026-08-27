@@ -29,3 +29,5 @@ android {
 dependencies {
     implementation 'com.google.android.gms:play-services-nearby:19.5.0'
 }
+
+// Native Nearby build trigger for ViaCom 0.2.0
