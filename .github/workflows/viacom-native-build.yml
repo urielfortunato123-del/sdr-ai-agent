@@ -1,9 +1,9 @@
-name: LIV Messenger Android Build
+name: LIV Cleanroom Android Build
 
 on:
   push:
     branches:
-      - liv-messenger-v030
+      - liv-cleanroom-v040
     paths:
       - 'viacom-native/**'
       - '.github/workflows/viacom-native-build.yml'
@@ -29,13 +29,6 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Patch callback Activity context
-        shell: bash
-        run: |
-          SRC='viacom-native/app/src/main/java/com/uriel/viacom/beta016/MainActivity.java'
-          sed -i 's/Toast.makeText(this, "Conectado a @"/Toast.makeText(MainActivity.this, "Conectado a @"/' "$SRC"
-          sed -i 's/Toast.makeText(this, "Conexão não concluída. Código: "/Toast.makeText(MainActivity.this, "Conexão não concluída. Código: "/' "$SRC"
-
       - name: Build release APK
         id: build
         continue-on-error: true
@@ -48,7 +41,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liv-messenger-0.3.0-build
+          name: liv-messenger-0.4.0-build
           path: |
             build.log
             viacom-native/app/build/outputs/apk/release/app-release-unsigned.apk
