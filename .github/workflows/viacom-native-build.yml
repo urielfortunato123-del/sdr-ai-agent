@@ -30,11 +30,24 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Build release APK
-        run: gradle -p viacom-native :app:assembleRelease --stacktrace
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle -p viacom-native :app:assembleRelease --stacktrace 2>&1 | tee build.log
 
-      - name: Upload unsigned APK
+      - name: Upload build diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: liv-messenger-0.3.0-unsigned
-          path: viacom-native/app/build/outputs/apk/release/app-release-unsigned.apk
+          name: liv-messenger-0.3.0-build
+          path: |
+            build.log
+            viacom-native/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: ignore
           retention-days: 1
+
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
