@@ -30,4 +30,4 @@ dependencies {
     implementation 'com.google.android.gms:play-services-nearby:19.5.0'
 }
 
-// LIV Messenger 0.4.0 clean-room messenger shell + offline Nearby transport
+// LIV Messenger 0.4.0 clean-room messenger shell + offline Nearby transport // build trigger
