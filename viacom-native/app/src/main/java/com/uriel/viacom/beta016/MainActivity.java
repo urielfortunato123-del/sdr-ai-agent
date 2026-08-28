@@ -1,28 +1,16 @@
-package com.uriel.viacom.beta016;
+package com.uriel.livmessenger;
 
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothManager;
-import android.content.Context;
-import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
-import android.media.MediaPlayer;
-import android.media.MediaRecorder;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Looper;
-import android.provider.MediaStore;
+import android.text.InputType;
+import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -48,67 +36,82 @@ import com.google.android.gms.nearby.connection.PayloadCallback;
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate;
 import com.google.android.gms.nearby.connection.Strategy;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.PublicKey;
+import java.security.SecureRandom;
+import java.security.spec.ECGenParameterSpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyAgreement;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 public class MainActivity extends Activity {
 
-    private static final String SERVICE_ID = "com.uriel.viacom.nearby.v1";
+    private static final String SERVICE_ID = "com.uriel.livmessenger.nearby.v1";
     private static final Strategy STRATEGY = Strategy.P2P_CLUSTER;
-    private static final int REQ_NEARBY = 700;
-    private static final int REQ_AUDIO = 701;
-    private static final int REQ_LOCATION = 702;
-    private static final int REQ_CAMERA_PERMISSION = 703;
-    private static final int REQ_CAMERA_CAPTURE = 704;
+    private static final int REQ_NEARBY = 901;
 
-    private final int BG = Color.rgb(4, 17, 27);
-    private final int CARD = Color.rgb(13, 37, 53);
-    private final int CARD_DARK = Color.rgb(8, 29, 43);
-    private final int TEAL = Color.rgb(82, 215, 208);
-    private final int TEXT = Color.rgb(240, 246, 250);
-    private final int MUTED = Color.rgb(156, 178, 194);
-    private final int RED = Color.rgb(255, 84, 100);
-    private final int GREEN = Color.rgb(72, 220, 160);
+    private final int BG = Color.rgb(7, 16, 24);
+    private final int SURFACE = Color.rgb(16, 27, 38);
+    private final int SURFACE_2 = Color.rgb(22, 36, 49);
+    private final int ACCENT = Color.rgb(66, 211, 196);
+    private final int TEXT = Color.rgb(242, 247, 250);
+    private final int MUTED = Color.rgb(154, 171, 184);
+    private final int GREEN = Color.rgb(83, 222, 159);
+    private final int DANGER = Color.rgb(255, 101, 113);
 
     private ConnectionsClient connectionsClient;
-    private SharedPreferences prefs;
-    private String displayName = "";
-    private String activeEndpointId;
-    private boolean searching = false;
-    private boolean pendingSearchAfterPermission = false;
+    private android.content.SharedPreferences prefs;
+
+    private String username = "";
+    private boolean showNearby = false;
+    private boolean inChat = false;
+    private boolean pendingDiscoverAfterPermission = false;
+    private String activePeerName;
+    private String pendingChatEndpoint;
+
+    private LinearLayout contentList;
+    private TextView homeSubtitle;
+    private Button conversationsTab;
+    private Button nearbyTab;
+    private Button bottomAction;
+    private LinearLayout messagesList;
+    private ScrollView messagesScroll;
+    private EditText messageInput;
+    private TextView chatStatus;
 
     private final Map<String, String> discovered = new LinkedHashMap<>();
-    private final Map<String, String> connected = new LinkedHashMap<>();
+    private final Map<String, String> endpointToName = new HashMap<>();
+    private final Map<String, String> nameToEndpoint = new HashMap<>();
+    private final Set<String> connectedEndpoints = new HashSet<>();
     private final Map<String, String> pendingNames = new HashMap<>();
-    private final Map<Long, Payload> incomingFiles = new HashMap<>();
-    private final Map<Long, String> incomingTypes = new HashMap<>();
-    private final List<String> events = new ArrayList<>();
+    private final Map<String, SecretKey> sessionKeys = new HashMap<>();
+    private final Map<String, String> queuedText = new HashMap<>();
 
-    private TextView connectionTitle;
-    private TextView connectionDetail;
-    private TextView statusDot;
-    private TextView searchHint;
-    private TextView eventsView;
-    private TextView versionView;
-    private LinearLayout deviceList;
-    private Button searchButton;
-    private Button talkButton;
-    private Button photoButton;
-    private Button locationButton;
-
-    private MediaRecorder recorder;
-    private File recordingFile;
-    private boolean recording = false;
+    private KeyPair localKeyPair;
+    private final SecureRandom secureRandom = new SecureRandom();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -116,177 +119,397 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(Color.BLACK);
         getWindow().setNavigationBarColor(Color.BLACK);
 
-        prefs = getSharedPreferences("viacom", MODE_PRIVATE);
-        displayName = prefs.getString("display_name", "").trim();
+        prefs = getSharedPreferences("liv_messenger", MODE_PRIVATE);
+        username = prefs.getString("username", "").trim();
         connectionsClient = Nearby.getConnectionsClient(this);
+        ensureKeyPair();
+        buildHomeUi();
 
-        buildUi();
-        addEvent("ViaCom 0.2.0 iniciado");
-
-        if (displayName.isEmpty()) {
-            showNameDialog(false);
+        if (username.isEmpty()) {
+            showUsernameDialog(true);
         } else if (hasNearbyPermissions()) {
-            startAdvertisingOnly();
+            startAdvertising();
         }
     }
 
-    private void buildUi() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(BG);
+    private void buildHomeUi() {
+        inChat = false;
+        activePeerName = null;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(20), dp(18), dp(36));
-        scroll.addView(root, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.setBackgroundColor(BG);
+        root.setPadding(dp(16), dp(18), dp(16), dp(18));
 
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, dp(4), 0, dp(18));
-        TextView logo = text("VC", 22, true, TEAL);
+
+        TextView logo = text("L", 24, true, BG);
         logo.setGravity(Gravity.CENTER);
-        logo.setBackground(roundRect(Color.rgb(8, 32, 45), TEAL, 18, 2));
-        header.addView(logo, new LinearLayout.LayoutParams(dp(66), dp(66)));
+        logo.setBackground(roundRect(ACCENT, ACCENT, 22, 0));
+        header.addView(logo, new LinearLayout.LayoutParams(dp(54), dp(54)));
 
         LinearLayout titleBox = new LinearLayout(this);
         titleBox.setOrientation(LinearLayout.VERTICAL);
-        titleBox.setPadding(dp(14), 0, 0, 0);
-        TextView title = text("ViaCom", 31, true, TEXT);
-        TextView subtitle = text("COMUNICAÇÃO LOCAL • SEM INTERNET", 13, false, MUTED);
-        subtitle.setLetterSpacing(.08f);
-        titleBox.addView(title);
-        titleBox.addView(subtitle);
+        titleBox.setPadding(dp(12), 0, 0, 0);
+        titleBox.addView(text("LIV Messenger", 27, true, TEXT));
+        homeSubtitle = text(username.isEmpty() ? "Configure seu @usuário" : "@" + username + " • mensagens offline", 13, false, MUTED);
+        titleBox.addView(homeSubtitle);
         header.addView(titleBox, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        Button settings = smallButton("⚙");
-        settings.setOnClickListener(v -> showNameDialog(false));
-        header.addView(settings, new LinearLayout.LayoutParams(dp(58), dp(58)));
+        Button profile = smallButton("⚙");
+        profile.setOnClickListener(v -> showUsernameDialog(false));
+        header.addView(profile, new LinearLayout.LayoutParams(dp(52), dp(52)));
         root.addView(header);
 
-        LinearLayout connectionCard = card();
-        connectionCard.addView(label("CONEXÃO PRÓXIMA"));
+        LinearLayout secureBar = new LinearLayout(this);
+        secureBar.setPadding(dp(12), dp(9), dp(12), dp(9));
+        secureBar.setGravity(Gravity.CENTER_VERTICAL);
+        secureBar.setBackground(roundRect(SURFACE, SURFACE_2, 14, 1));
+        TextView secureText = text("●  OFFLINE FIRST  •  SESSÃO CRIPTOGRAFADA", 12, true, GREEN);
+        secureBar.addView(secureText);
+        LinearLayout.LayoutParams secureLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        secureLp.topMargin = dp(16);
+        root.addView(secureBar, secureLp);
 
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setGravity(Gravity.TOP);
-        LinearLayout statusTextBox = new LinearLayout(this);
-        statusTextBox.setOrientation(LinearLayout.VERTICAL);
-        connectionTitle = text("Nenhum aparelho conectado", 24, true, TEXT);
-        connectionDetail = text("Toque em Buscar aparelhos para encontrar outros ViaCom próximos.", 15, false, MUTED);
-        connectionDetail.setPadding(0, dp(5), dp(12), 0);
-        statusTextBox.addView(connectionTitle);
-        statusTextBox.addView(connectionDetail);
-        statusRow.addView(statusTextBox, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        statusDot = text("●", 22, true, RED);
-        statusRow.addView(statusDot);
-        connectionCard.addView(statusRow);
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setPadding(0, dp(14), 0, dp(8));
+        conversationsTab = tabButton("CONVERSAS", !showNearby);
+        nearbyTab = tabButton("PRÓXIMOS", showNearby);
+        conversationsTab.setOnClickListener(v -> {
+            showNearby = false;
+            buildHomeUi();
+        });
+        nearbyTab.setOnClickListener(v -> {
+            showNearby = true;
+            buildHomeUi();
+            ensurePermissionsAndDiscover();
+        });
+        tabs.addView(conversationsTab, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams tab2 = new LinearLayout.LayoutParams(0, dp(48), 1);
+        tab2.leftMargin = dp(8);
+        tabs.addView(nearbyTab, tab2);
+        root.addView(tabs);
 
-        searchButton = primaryButton("BUSCAR APARELHOS");
-        searchButton.setOnClickListener(v -> ensurePermissionsAndSearch());
-        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
-        searchLp.topMargin = dp(16);
-        connectionCard.addView(searchButton, searchLp);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        contentList = new LinearLayout(this);
+        contentList.setOrientation(LinearLayout.VERTICAL);
+        contentList.setPadding(0, dp(4), 0, dp(12));
+        scroll.addView(contentList, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        searchHint = text("O ViaCom procura somente outros celulares com o ViaCom aberto. Na primeira vez, permita 'Aparelhos próximos'.", 13, false, MUTED);
-        searchHint.setPadding(dp(2), dp(10), dp(2), 0);
-        connectionCard.addView(searchHint);
+        bottomAction = primaryButton(showNearby ? "BUSCAR NOVAMENTE" : "+ NOVA CONVERSA");
+        bottomAction.setOnClickListener(v -> {
+            showNearby = true;
+            buildHomeUi();
+            ensurePermissionsAndDiscover();
+        });
+        root.addView(bottomAction, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
 
-        deviceList = new LinearLayout(this);
-        deviceList.setOrientation(LinearLayout.VERTICAL);
-        deviceList.setPadding(0, dp(12), 0, 0);
-        connectionCard.addView(deviceList);
-        root.addView(connectionCard, lpTop(14));
-
-        LinearLayout targetCard = card();
-        targetCard.addView(label("FALAR COM"));
-        TextView target = text("Aparelho conectado", 18, true, TEXT);
-        target.setId(View.generateViewId());
-        targetCard.addView(target);
-        TextView secure = text("Conexão direta protegida pelo Nearby Connections", 13, false, GREEN);
-        secure.setPadding(0, dp(4), 0, 0);
-        targetCard.addView(secure);
-        root.addView(targetCard, lpTop(14));
-
-        TextView touchLabel = label("TOQUE PARA FALAR");
-        touchLabel.setGravity(Gravity.CENTER);
-        touchLabel.setPadding(0, dp(22), 0, dp(10));
-        root.addView(touchLabel);
-
-        talkButton = new Button(this);
-        talkButton.setText("FALAR\nCONECTE UM CELULAR");
-        talkButton.setTextColor(TEXT);
-        talkButton.setTextSize(22);
-        talkButton.setTypeface(Typeface.DEFAULT_BOLD);
-        talkButton.setAllCaps(false);
-        talkButton.setGravity(Gravity.CENTER);
-        talkButton.setBackground(roundRect(Color.rgb(12, 54, 70), TEAL, 110, 2));
-        talkButton.setEnabled(false);
-        talkButton.setOnClickListener(v -> toggleRecording());
-        LinearLayout.LayoutParams talkLp = new LinearLayout.LayoutParams(dp(230), dp(230));
-        talkLp.gravity = Gravity.CENTER_HORIZONTAL;
-        root.addView(talkButton, talkLp);
-
-        LinearLayout actionRow = new LinearLayout(this);
-        actionRow.setOrientation(LinearLayout.HORIZONTAL);
-        actionRow.setPadding(0, dp(22), 0, 0);
-        photoButton = actionButton("▣\nFoto");
-        locationButton = actionButton("⌖\nLocalização");
-        photoButton.setEnabled(false);
-        locationButton.setEnabled(false);
-        photoButton.setOnClickListener(v -> capturePhoto());
-        locationButton.setOnClickListener(v -> sendLocation());
-        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, dp(128), 1);
-        half.rightMargin = dp(8);
-        actionRow.addView(photoButton, half);
-        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(128), 1);
-        half2.leftMargin = dp(8);
-        actionRow.addView(locationButton, half2);
-        root.addView(actionRow);
-
-        LinearLayout eventsCard = card();
-        eventsCard.addView(label("ATIVIDADE"));
-        eventsCard.addView(text("Últimos eventos", 23, true, TEXT));
-        eventsView = text("Nenhum evento ainda.", 14, false, MUTED);
-        eventsView.setPadding(0, dp(12), 0, 0);
-        eventsCard.addView(eventsView);
-        root.addView(eventsCard, lpTop(16));
-
-        LinearLayout infoCard = card();
-        versionView = text("BETA 0.2.0 • NEARBY NATIVO", 13, true, TEAL);
-        infoCard.addView(versionView);
-        TextView info = text("• Busca real de aparelhos próximos, sem QR.\n• Bluetooth, BLE e Wi‑Fi são escolhidos automaticamente pelo Nearby Connections.\n• Voz, foto e GPS usam o mesmo enlace direto.\n• Próxima etapa: retransmissão mesh entre vários ViaCom.", 14, false, MUTED);
-        info.setPadding(0, dp(10), 0, 0);
-        infoCard.addView(info);
-        root.addView(infoCard, lpTop(16));
-
-        TextView footer = text("ViaCom • comunicação offline entre aparelhos próximos", 12, false, Color.rgb(91, 117, 135));
+        TextView footer = text("LIV 0.3.0 • sem QR • sem número de telefone", 11, false, MUTED);
         footer.setGravity(Gravity.CENTER);
-        footer.setPadding(0, dp(22), 0, 0);
+        footer.setPadding(0, dp(13), 0, 0);
         root.addView(footer);
 
-        setContentView(scroll);
+        setContentView(root);
+        if (showNearby) refreshNearbyList(); else refreshConversationList();
     }
 
-    private void ensurePermissionsAndSearch() {
-        if (displayName.isEmpty()) {
-            showNameDialog(true);
+    private void refreshConversationList() {
+        if (contentList == null) return;
+        contentList.removeAllViews();
+
+        List<String> peers = new ArrayList<>(prefs.getStringSet("peers", Collections.emptySet()));
+        peers.sort((a, b) -> Long.compare(lastTimestamp(b), lastTimestamp(a)));
+
+        if (peers.isEmpty()) {
+            LinearLayout empty = card();
+            TextView title = text("Suas conversas vão aparecer aqui", 20, true, TEXT);
+            TextView body = text("Toque em Nova conversa. O LIV procura outros usuários próximos usando os rádios do celular, sem QR Code.", 14, false, MUTED);
+            body.setPadding(0, dp(8), 0, 0);
+            empty.addView(title);
+            empty.addView(body);
+            contentList.addView(empty, lpTop(8));
+            return;
+        }
+
+        for (String peer : peers) {
+            JSONObject last = lastMessage(peer);
+            String preview = last == null ? "Conversa iniciada" : last.optString("text", "Mensagem");
+            long ts = last == null ? 0 : last.optLong("ts", 0);
+            boolean online = isPeerConnected(peer);
+
+            LinearLayout item = card();
+            item.setClickable(true);
+            item.setOnClickListener(v -> openChat(peer));
+
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView avatar = text(initials(peer), 16, true, BG);
+            avatar.setGravity(Gravity.CENTER);
+            avatar.setBackground(roundRect(online ? ACCENT : Color.rgb(102, 124, 140), Color.TRANSPARENT, 26, 0));
+            row.addView(avatar, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(12), 0, dp(8), 0);
+            mid.addView(text("@" + stripAt(peer), 17, true, TEXT));
+            TextView pv = text(preview, 14, false, MUTED);
+            pv.setMaxLines(1);
+            mid.addView(pv);
+            row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+            LinearLayout right = new LinearLayout(this);
+            right.setOrientation(LinearLayout.VERTICAL);
+            right.setGravity(Gravity.END);
+            right.addView(text(ts == 0 ? "" : shortTime(ts), 12, false, MUTED));
+            TextView state = text(online ? "● próximo" : "offline", 12, true, online ? GREEN : MUTED);
+            state.setPadding(0, dp(6), 0, 0);
+            right.addView(state);
+            row.addView(right);
+
+            item.addView(row);
+            contentList.addView(item, lpTop(8));
+        }
+    }
+
+    private void refreshNearbyList() {
+        if (contentList == null) return;
+        contentList.removeAllViews();
+
+        LinearLayout intro = card();
+        intro.addView(text("Pessoas próximas", 20, true, TEXT));
+        TextView hint = text("Deixe o LIV aberto nos dois celulares. Quando um usuário aparecer, toque para conversar.", 14, false, MUTED);
+        hint.setPadding(0, dp(7), 0, 0);
+        intro.addView(hint);
+        contentList.addView(intro, lpTop(8));
+
+        if (discovered.isEmpty()) {
+            TextView searching = text("Procurando usuários LIV próximos…", 15, false, MUTED);
+            searching.setGravity(Gravity.CENTER);
+            searching.setPadding(0, dp(28), 0, dp(28));
+            contentList.addView(searching);
+            return;
+        }
+
+        for (Map.Entry<String, String> e : discovered.entrySet()) {
+            String endpointId = e.getKey();
+            String peer = e.getValue();
+
+            LinearLayout item = card();
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView avatar = text(initials(peer), 16, true, BG);
+            avatar.setGravity(Gravity.CENTER);
+            avatar.setBackground(roundRect(ACCENT, Color.TRANSPARENT, 26, 0));
+            row.addView(avatar, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(12), 0, dp(8), 0);
+            mid.addView(text("@" + stripAt(peer), 17, true, TEXT));
+            mid.addView(text(connectedEndpoints.contains(endpointId) ? "Conectado agora" : "LIV disponível", 13, false, connectedEndpoints.contains(endpointId) ? GREEN : MUTED));
+            row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+            Button talk = compactButton(connectedEndpoints.contains(endpointId) ? "ABRIR" : "CONVERSAR");
+            talk.setOnClickListener(v -> {
+                if (connectedEndpoints.contains(endpointId)) {
+                    openChat(peer);
+                } else {
+                    connectTo(endpointId, peer);
+                }
+            });
+            row.addView(talk, new LinearLayout.LayoutParams(dp(118), dp(46)));
+            item.addView(row);
+            contentList.addView(item, lpTop(8));
+        }
+    }
+
+    private void openChat(String peer) {
+        inChat = true;
+        activePeerName = peer;
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(BG);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(10), dp(14), dp(12), dp(12));
+        top.setBackgroundColor(SURFACE);
+
+        Button back = smallButton("‹");
+        back.setTextSize(30);
+        back.setOnClickListener(v -> {
+            inChat = false;
+            buildHomeUi();
+        });
+        top.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        titleBox.setPadding(dp(8), 0, 0, 0);
+        titleBox.addView(text("@" + stripAt(peer), 19, true, TEXT));
+        chatStatus = text(isPeerConnected(peer) ? "● próximo • protegido" : "offline • mensagem não será enviada agora", 12, false, isPeerConnected(peer) ? GREEN : MUTED);
+        titleBox.addView(chatStatus);
+        top.addView(titleBox, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(top);
+
+        messagesScroll = new ScrollView(this);
+        messagesScroll.setFillViewport(true);
+        messagesList = new LinearLayout(this);
+        messagesList.setOrientation(LinearLayout.VERTICAL);
+        messagesList.setPadding(dp(12), dp(16), dp(12), dp(16));
+        messagesScroll.addView(messagesList, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(messagesScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        LinearLayout inputBar = new LinearLayout(this);
+        inputBar.setGravity(Gravity.BOTTOM);
+        inputBar.setPadding(dp(10), dp(8), dp(10), dp(12));
+        inputBar.setBackgroundColor(SURFACE);
+
+        messageInput = new EditText(this);
+        messageInput.setHint("Mensagem");
+        messageInput.setHintTextColor(MUTED);
+        messageInput.setTextColor(TEXT);
+        messageInput.setTextSize(16);
+        messageInput.setMinHeight(dp(50));
+        messageInput.setMaxLines(4);
+        messageInput.setPadding(dp(16), dp(10), dp(16), dp(10));
+        messageInput.setBackground(roundRect(SURFACE_2, Color.rgb(47, 65, 78), 24, 1));
+        inputBar.addView(messageInput, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        Button send = primaryButton("➤");
+        send.setTextSize(22);
+        send.setOnClickListener(v -> sendCurrentMessage());
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(dp(58), dp(52));
+        sendLp.leftMargin = dp(8);
+        inputBar.addView(send, sendLp);
+        root.addView(inputBar);
+
+        setContentView(root);
+        renderMessages(peer);
+    }
+
+    private void renderMessages(String peer) {
+        if (messagesList == null) return;
+        messagesList.removeAllViews();
+        JSONArray arr = loadMessages(peer);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            addMessageBubble(o.optString("text", ""), o.optBoolean("mine", false), o.optLong("ts", 0));
+        }
+        scrollMessagesToBottom();
+    }
+
+    private void addMessageBubble(String message, boolean mine, long ts) {
+        if (messagesList == null) return;
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(mine ? Gravity.END : Gravity.START);
+        row.setPadding(0, dp(4), 0, dp(4));
+
+        LinearLayout bubble = new LinearLayout(this);
+        bubble.setOrientation(LinearLayout.VERTICAL);
+        bubble.setPadding(dp(14), dp(10), dp(14), dp(8));
+        bubble.setBackground(roundRect(mine ? Color.rgb(25, 91, 86) : SURFACE_2, Color.TRANSPARENT, 18, 0));
+
+        TextView body = text(message, 16, false, TEXT);
+        bubble.addView(body);
+        TextView time = text(shortTime(ts), 11, false, mine ? Color.rgb(183, 226, 222) : MUTED);
+        time.setGravity(Gravity.END);
+        time.setPadding(dp(16), dp(4), 0, 0);
+        bubble.addView(time);
+
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.width = Math.min(getResources().getDisplayMetrics().widthPixels * 78 / 100, dp(340));
+        row.addView(bubble, bp);
+        messagesList.addView(row);
+    }
+
+    private void sendCurrentMessage() {
+        if (messageInput == null || activePeerName == null) return;
+        String text = messageInput.getText().toString().trim();
+        if (text.isEmpty()) return;
+
+        String endpointId = nameToEndpoint.get(activePeerName);
+        if (endpointId == null || !connectedEndpoints.contains(endpointId)) {
+            Toast.makeText(this, "@" + stripAt(activePeerName) + " não está próximo agora.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        messageInput.setText("");
+        SecretKey key = sessionKeys.get(endpointId);
+        if (key == null) {
+            queuedText.put(endpointId, text);
+            sendPublicKey(endpointId);
+            Toast.makeText(this, "Preparando sessão criptografada…", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        sendEncryptedText(endpointId, activePeerName, text);
+    }
+
+    private void sendEncryptedText(String endpointId, String peer, String text) {
+        try {
+            SecretKey key = sessionKeys.get(endpointId);
+            if (key == null) return;
+            byte[] iv = new byte[12];
+            secureRandom.nextBytes(iv);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
+            byte[] encrypted = cipher.doFinal(text.getBytes(StandardCharsets.UTF_8));
+            long ts = System.currentTimeMillis();
+            String packet = "MSG|" + ts + "|" + Base64.encodeToString(iv, Base64.NO_WRAP) + "|" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
+            connectionsClient.sendPayload(endpointId, Payload.fromBytes(packet.getBytes(StandardCharsets.UTF_8)))
+                    .addOnFailureListener(e -> runOnUiThread(() -> Toast.makeText(this, "Falha ao enviar mensagem.", Toast.LENGTH_LONG).show()));
+            saveMessage(peer, text, true, ts);
+            if (inChat && peer.equals(activePeerName)) {
+                addMessageBubble(text, true, ts);
+                scrollMessagesToBottom();
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Erro na criptografia da mensagem.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void connectTo(String endpointId, String peer) {
+        if (username.isEmpty()) {
+            showUsernameDialog(true);
+            return;
+        }
+        pendingChatEndpoint = endpointId;
+        pendingNames.put(endpointId, peer);
+        Toast.makeText(this, "Conectando a @" + stripAt(peer) + "…", Toast.LENGTH_SHORT).show();
+        connectionsClient.requestConnection("@" + username, endpointId, connectionLifecycleCallback)
+                .addOnFailureListener(e -> runOnUiThread(() -> Toast.makeText(this, "Não foi possível iniciar a conexão.", Toast.LENGTH_LONG).show()));
+    }
+
+    private void ensurePermissionsAndDiscover() {
+        if (username.isEmpty()) {
+            showUsernameDialog(true);
             return;
         }
         if (!hasNearbyPermissions()) {
-            pendingSearchAfterPermission = true;
+            pendingDiscoverAfterPermission = true;
             requestPermissions(requiredNearbyPermissions(), REQ_NEARBY);
             return;
         }
-        startNearbySearch();
+        startAdvertising();
+        startDiscovery();
     }
 
     private String[] requiredNearbyPermissions() {
         List<String> p = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 31) {
-            p.add(Manifest.permission.BLUETOOTH_ADVERTISE);
-            p.add(Manifest.permission.BLUETOOTH_CONNECT);
             p.add(Manifest.permission.BLUETOOTH_SCAN);
+            p.add(Manifest.permission.BLUETOOTH_CONNECT);
+            p.add(Manifest.permission.BLUETOOTH_ADVERTISE);
         }
-        if (Build.VERSION.SDK_INT >= 32) {
+        if (Build.VERSION.SDK_INT >= 33) {
             p.add(Manifest.permission.NEARBY_WIFI_DEVICES);
         }
         if (Build.VERSION.SDK_INT <= 31) {
@@ -302,48 +525,40 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    private void startNearbySearch() {
+    private void startAdvertising() {
+        if (!hasNearbyPermissions() || username.isEmpty()) return;
+        connectionsClient.stopAdvertising();
+        AdvertisingOptions options = new AdvertisingOptions.Builder().setStrategy(STRATEGY).build();
+        connectionsClient.startAdvertising("@" + username, SERVICE_ID, connectionLifecycleCallback, options)
+                .addOnFailureListener(e -> runOnUiThread(() -> Toast.makeText(this, "Não foi possível ficar visível para outros LIV.", Toast.LENGTH_LONG).show()));
+    }
+
+    private void startDiscovery() {
         if (!hasNearbyPermissions()) return;
         discovered.clear();
-        refreshDeviceList();
-        searching = true;
-        searchButton.setText("BUSCANDO...");
-        searchHint.setText("Procurando ViaCom próximos. Deixe o outro celular com o ViaCom aberto.");
-        addEvent("Busca de aparelhos próximos iniciada");
-
+        if (showNearby) refreshNearbyList();
         connectionsClient.stopDiscovery();
-        connectionsClient.stopAdvertising();
-        startAdvertisingInternal();
-
         DiscoveryOptions options = new DiscoveryOptions.Builder().setStrategy(STRATEGY).build();
         connectionsClient.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, options)
                 .addOnSuccessListener(unused -> runOnUiThread(() -> {
-                    connectionDetail.setText("Buscando aparelhos ViaCom próximos...");
-                    addEvent("Descoberta Nearby ativa");
+                    if (bottomAction != null) bottomAction.setText("BUSCANDO…");
                 }))
-                .addOnFailureListener(e -> runOnUiThread(() -> nearbyError("Busca", e)));
-    }
-
-    private void startAdvertisingOnly() {
-        if (!hasNearbyPermissions() || displayName.isEmpty()) return;
-        startAdvertisingInternal();
-    }
-
-    private void startAdvertisingInternal() {
-        AdvertisingOptions options = new AdvertisingOptions.Builder().setStrategy(STRATEGY).build();
-        connectionsClient.startAdvertising(displayName, SERVICE_ID, connectionLifecycleCallback, options)
-                .addOnSuccessListener(unused -> runOnUiThread(() -> addEvent("Este aparelho está visível no ViaCom")))
-                .addOnFailureListener(e -> runOnUiThread(() -> nearbyError("Disponibilidade", e)));
+                .addOnFailureListener(e -> runOnUiThread(() -> {
+                    if (bottomAction != null) bottomAction.setText("BUSCAR NOVAMENTE");
+                    Toast.makeText(this, "Falha ao procurar aparelhos próximos.", Toast.LENGTH_LONG).show();
+                }));
     }
 
     private final EndpointDiscoveryCallback endpointDiscoveryCallback = new EndpointDiscoveryCallback() {
         @Override
         public void onEndpointFound(String endpointId, DiscoveredEndpointInfo info) {
-            discovered.put(endpointId, info.getEndpointName());
+            String peer = normalizePeer(info.getEndpointName());
+            if (peer.equals("@" + username)) return;
+            discovered.put(endpointId, peer);
+            endpointToName.put(endpointId, peer);
             runOnUiThread(() -> {
-                refreshDeviceList();
-                connectionDetail.setText(discovered.size() + " aparelho(s) encontrado(s). Toque para conectar.");
-                addEvent("Encontrado: " + info.getEndpointName());
+                if (showNearby && !inChat) refreshNearbyList();
+                if (bottomAction != null) bottomAction.setText("BUSCAR NOVAMENTE");
             });
         }
 
@@ -351,8 +566,7 @@ public class MainActivity extends Activity {
         public void onEndpointLost(String endpointId) {
             discovered.remove(endpointId);
             runOnUiThread(() -> {
-                refreshDeviceList();
-                addEvent("Aparelho saiu do alcance");
+                if (showNearby && !inChat) refreshNearbyList();
             });
         }
     };
@@ -360,532 +574,384 @@ public class MainActivity extends Activity {
     private final ConnectionLifecycleCallback connectionLifecycleCallback = new ConnectionLifecycleCallback() {
         @Override
         public void onConnectionInitiated(String endpointId, ConnectionInfo info) {
-            pendingNames.put(endpointId, info.getEndpointName());
-            runOnUiThread(() -> showConnectionApproval(endpointId, info));
+            String peer = normalizePeer(info.getEndpointName());
+            pendingNames.put(endpointId, peer);
+            runOnUiThread(() -> showConnectionApproval(endpointId, peer, info.getAuthenticationDigits()));
         }
 
         @Override
-        public void onConnectionResult(String endpointId, ConnectionResolution resolution) {
+        public void onConnectionResult(String endpointId, ConnectionResolution result) {
             runOnUiThread(() -> {
-                if (resolution.getStatus().getStatusCode() == ConnectionsStatusCodes.STATUS_OK) {
-                    String name = pendingNames.getOrDefault(endpointId, discovered.getOrDefault(endpointId, "Aparelho ViaCom"));
-                    connected.put(endpointId, name);
-                    activeEndpointId = endpointId;
-                    setConnectedUi(name);
-                    addEvent("Conectado a " + name);
+                if (result.getStatus().getStatusCode() == ConnectionsStatusCodes.STATUS_OK) {
+                    String peer = pendingNames.getOrDefault(endpointId, endpointToName.getOrDefault(endpointId, "@usuario"));
+                    peer = normalizePeer(peer);
+                    connectedEndpoints.add(endpointId);
+                    endpointToName.put(endpointId, peer);
+                    nameToEndpoint.put(peer, endpointId);
+                    addPeer(peer);
+                    sendPublicKey(endpointId);
+                    Toast.makeText(this, "Conectado a @" + stripAt(peer), Toast.LENGTH_SHORT).show();
+                    if (pendingChatEndpoint != null && pendingChatEndpoint.equals(endpointId)) {
+                        pendingChatEndpoint = null;
+                        openChat(peer);
+                    } else if (!inChat) {
+                        if (showNearby) refreshNearbyList(); else refreshConversationList();
+                    }
                 } else {
-                    addEvent("Conexão recusada/falhou: " + resolution.getStatus().getStatusCode());
-                    Toast.makeText(MainActivity.this, "Não foi possível conectar.", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "Conexão não concluída. Código: " + result.getStatus().getStatusCode(), Toast.LENGTH_LONG).show();
                 }
             });
         }
 
         @Override
         public void onDisconnected(String endpointId) {
-            String name = connected.remove(endpointId);
-            if (endpointId.equals(activeEndpointId)) activeEndpointId = null;
+            String peer = endpointToName.get(endpointId);
+            connectedEndpoints.remove(endpointId);
+            sessionKeys.remove(endpointId);
+            if (peer != null) nameToEndpoint.remove(peer);
             runOnUiThread(() -> {
-                setDisconnectedUi();
-                addEvent("Desconectado" + (name == null ? "" : " de " + name));
+                if (inChat && peer != null && peer.equals(activePeerName) && chatStatus != null) {
+                    chatStatus.setText("offline • mensagem não será enviada agora");
+                    chatStatus.setTextColor(MUTED);
+                } else if (!inChat) {
+                    if (showNearby) refreshNearbyList(); else refreshConversationList();
+                }
             });
         }
     };
 
-    private void showConnectionApproval(String endpointId, ConnectionInfo info) {
-        String code = info.getAuthenticationDigits();
+    private void showConnectionApproval(String endpointId, String peer, String digits) {
         new AlertDialog.Builder(this)
-                .setTitle("Solicitação de conexão")
-                .setMessage(info.getEndpointName() + " quer se conectar.\n\nCódigo de segurança: " + code + "\n\nConfirme se o mesmo código aparece no outro aparelho.")
-                .setPositiveButton("Aceitar", (d, w) -> {
-                    connectionsClient.acceptConnection(endpointId, payloadCallback);
-                    connectionDetail.setText("Confirmando conexão com " + info.getEndpointName() + "...");
-                    addEvent("Conexão aceita • código " + code);
-                })
-                .setNegativeButton("Recusar", (d, w) -> {
-                    connectionsClient.rejectConnection(endpointId);
-                    addEvent("Conexão recusada");
-                })
+                .setTitle("Conectar com @" + stripAt(peer) + "?")
+                .setMessage("Compare este código nos dois celulares:\n\n" + digits + "\n\nSe os códigos forem iguais, aceite nos dois aparelhos.")
+                .setPositiveButton("ACEITAR", (d, w) -> connectionsClient.acceptConnection(endpointId, payloadCallback))
+                .setNegativeButton("RECUSAR", (d, w) -> connectionsClient.rejectConnection(endpointId))
                 .setCancelable(false)
                 .show();
-    }
-
-    private void requestConnection(String endpointId, String name) {
-        if (activeEndpointId != null && activeEndpointId.equals(endpointId)) return;
-        connectionDetail.setText("Solicitando conexão com " + name + "...");
-        addEvent("Solicitando conexão com " + name);
-        connectionsClient.requestConnection(displayName, endpointId, connectionLifecycleCallback)
-                .addOnFailureListener(e -> runOnUiThread(() -> nearbyError("Conexão", e)));
-    }
-
-    private void refreshDeviceList() {
-        deviceList.removeAllViews();
-        if (discovered.isEmpty()) {
-            if (searching) {
-                TextView empty = text("Nenhum ViaCom encontrado ainda...", 14, false, MUTED);
-                empty.setPadding(dp(4), dp(6), dp(4), dp(6));
-                deviceList.addView(empty);
-            }
-            return;
-        }
-        for (Map.Entry<String, String> entry : discovered.entrySet()) {
-            String endpointId = entry.getKey();
-            String name = entry.getValue();
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(12), dp(10), dp(8), dp(10));
-            row.setBackground(roundRect(CARD_DARK, Color.rgb(29, 68, 88), 14, 1));
-
-            LinearLayout texts = new LinearLayout(this);
-            texts.setOrientation(LinearLayout.VERTICAL);
-            texts.addView(text(name, 17, true, TEXT));
-            texts.addView(text(connected.containsKey(endpointId) ? "Conectado" : "ViaCom próximo", 12, false, connected.containsKey(endpointId) ? GREEN : MUTED));
-            row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-            Button b = primaryButton(connected.containsKey(endpointId) ? "CONECTADO" : "CONECTAR");
-            b.setEnabled(!connected.containsKey(endpointId));
-            b.setOnClickListener(v -> requestConnection(endpointId, name));
-            row.addView(b, new LinearLayout.LayoutParams(dp(118), dp(48)));
-
-            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            rp.bottomMargin = dp(8);
-            deviceList.addView(row, rp);
-        }
-    }
-
-    private void setConnectedUi(String name) {
-        connectionTitle.setText("Conectado a " + name);
-        connectionDetail.setText("Enlace Nearby ativo. Voz, foto e localização disponíveis.");
-        statusDot.setTextColor(GREEN);
-        searchButton.setText("BUSCAR MAIS APARELHOS");
-        talkButton.setEnabled(true);
-        talkButton.setText("FALAR\nTOQUE PARA INICIAR");
-        photoButton.setEnabled(true);
-        locationButton.setEnabled(true);
-        refreshDeviceList();
-    }
-
-    private void setDisconnectedUi() {
-        connectionTitle.setText("Nenhum aparelho conectado");
-        connectionDetail.setText("Toque em Buscar aparelhos para encontrar outros ViaCom próximos.");
-        statusDot.setTextColor(RED);
-        talkButton.setEnabled(false);
-        talkButton.setText("FALAR\nCONECTE UM CELULAR");
-        photoButton.setEnabled(false);
-        locationButton.setEnabled(false);
     }
 
     private final PayloadCallback payloadCallback = new PayloadCallback() {
         @Override
         public void onPayloadReceived(String endpointId, Payload payload) {
-            if (payload.getType() == Payload.Type.BYTES) {
-                byte[] bytes = payload.asBytes();
-                if (bytes != null) handleBytes(endpointId, new String(bytes, StandardCharsets.UTF_8));
-            } else if (payload.getType() == Payload.Type.FILE) {
-                incomingFiles.put(payload.getId(), payload);
+            if (payload.getType() != Payload.Type.BYTES || payload.asBytes() == null) return;
+            String packet = new String(payload.asBytes(), StandardCharsets.UTF_8);
+            if (packet.startsWith("KEY|")) {
+                handleRemoteKey(endpointId, packet.substring(4));
+            } else if (packet.startsWith("MSG|")) {
+                handleEncryptedMessage(endpointId, packet);
             }
         }
 
         @Override
         public void onPayloadTransferUpdate(String endpointId, PayloadTransferUpdate update) {
-            if (update.getStatus() == PayloadTransferUpdate.Status.SUCCESS) {
-                Payload p = incomingFiles.get(update.getPayloadId());
-                if (p != null) runOnUiThread(() -> processIncomingFile(update.getPayloadId(), p));
-            } else if (update.getStatus() == PayloadTransferUpdate.Status.FAILURE || update.getStatus() == PayloadTransferUpdate.Status.CANCELED) {
-                runOnUiThread(() -> addEvent("Falha ao receber arquivo"));
-            }
         }
     };
 
-    private void handleBytes(String endpointId, String message) {
-        runOnUiThread(() -> {
-            if (message.startsWith("META|")) {
-                String[] parts = message.split("\\|", 4);
-                if (parts.length >= 3) {
-                    try {
-                        long id = Long.parseLong(parts[1]);
-                        incomingTypes.put(id, parts[2]);
-                        Payload p = incomingFiles.get(id);
-                        if (p != null) processIncomingFile(id, p);
-                    } catch (NumberFormatException ignored) {}
+    private void ensureKeyPair() {
+        if (localKeyPair != null) return;
+        try {
+            KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
+            gen.initialize(new ECGenParameterSpec("secp256r1"));
+            localKeyPair = gen.generateKeyPair();
+        } catch (Exception e) {
+            throw new RuntimeException("Falha ao iniciar criptografia LIV", e);
+        }
+    }
+
+    private void sendPublicKey(String endpointId) {
+        ensureKeyPair();
+        String publicKey = Base64.encodeToString(localKeyPair.getPublic().getEncoded(), Base64.NO_WRAP);
+        String packet = "KEY|" + publicKey;
+        connectionsClient.sendPayload(endpointId, Payload.fromBytes(packet.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private void handleRemoteKey(String endpointId, String base64Key) {
+        try {
+            byte[] encoded = Base64.decode(base64Key, Base64.NO_WRAP);
+            PublicKey remote = KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(encoded));
+            KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
+            agreement.init(localKeyPair.getPrivate());
+            agreement.doPhase(remote, true);
+            byte[] shared = agreement.generateSecret();
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(shared);
+            SecretKey key = new SecretKeySpec(digest, "AES");
+            sessionKeys.put(endpointId, key);
+
+            String queued = queuedText.remove(endpointId);
+            String peer = endpointToName.get(endpointId);
+            runOnUiThread(() -> {
+                if (inChat && peer != null && peer.equals(activePeerName) && chatStatus != null) {
+                    chatStatus.setText("● próximo • criptografia ativa");
+                    chatStatus.setTextColor(GREEN);
                 }
+                if (queued != null && peer != null) sendEncryptedText(endpointId, peer, queued);
+            });
+        } catch (Exception e) {
+            runOnUiThread(() -> Toast.makeText(this, "Não foi possível criar a sessão criptografada.", Toast.LENGTH_LONG).show());
+        }
+    }
+
+    private void handleEncryptedMessage(String endpointId, String packet) {
+        try {
+            String[] parts = packet.split("\\|", 4);
+            if (parts.length != 4) return;
+            long ts = Long.parseLong(parts[1]);
+            SecretKey key = sessionKeys.get(endpointId);
+            if (key == null) {
+                sendPublicKey(endpointId);
                 return;
             }
-            if (message.startsWith("GPS|")) {
-                String[] parts = message.split("\\|", 6);
-                if (parts.length >= 5) {
-                    String lat = parts[1];
-                    String lon = parts[2];
-                    String acc = parts[3];
-                    String sender = parts[4];
-                    addEvent("Localização recebida de " + sender);
-                    new AlertDialog.Builder(this)
-                            .setTitle("Localização recebida")
-                            .setMessage(sender + "\nLatitude: " + lat + "\nLongitude: " + lon + "\nPrecisão: ±" + acc + " m")
-                            .setPositiveButton("Abrir mapa", (d, w) -> {
-                                try {
-                                    Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("geo:" + lat + "," + lon + "?q=" + lat + "," + lon));
-                                    startActivity(i);
-                                } catch (Exception e) {
-                                    Toast.makeText(this, "Nenhum app de mapa disponível", Toast.LENGTH_SHORT).show();
-                                }
-                            })
-                            .setNegativeButton("Fechar", null)
-                            .show();
+            byte[] iv = Base64.decode(parts[2], Base64.NO_WRAP);
+            byte[] encrypted = Base64.decode(parts[3], Base64.NO_WRAP);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
+            String text = new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
+            String peer = endpointToName.getOrDefault(endpointId, "@usuario");
+            saveMessage(peer, text, false, ts);
+
+            runOnUiThread(() -> {
+                if (inChat && peer.equals(activePeerName)) {
+                    addMessageBubble(text, false, ts);
+                    scrollMessagesToBottom();
+                } else {
+                    Toast.makeText(this, "Nova mensagem de @" + stripAt(peer), Toast.LENGTH_SHORT).show();
+                    if (!showNearby) refreshConversationList();
                 }
+            });
+        } catch (Exception e) {
+            runOnUiThread(() -> Toast.makeText(this, "Mensagem recebida, mas não pôde ser descriptografada.", Toast.LENGTH_LONG).show());
+        }
+    }
+
+    private void showUsernameDialog(boolean required) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(6), dp(22), 0);
+
+        TextView info = text("Seu usuário identifica você no LIV. Não usamos número de telefone.", 14, false, Color.DKGRAY);
+        box.addView(info);
+
+        EditText input = new EditText(this);
+        input.setHint("usuario");
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setText(username);
+        box.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(required ? "Criar seu @usuário" : "Perfil LIV")
+                .setView(box)
+                .setPositiveButton("SALVAR", null)
+                .setNegativeButton(required ? null : "CANCELAR", null)
+                .setCancelable(!required)
+                .create();
+
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String value = input.getText().toString().trim().toLowerCase(Locale.ROOT);
+            if (value.startsWith("@")) value = value.substring(1);
+            if (!value.matches("[a-z0-9._]{3,20}")) {
+                input.setError("Use 3 a 20 caracteres: letras, números, ponto ou _");
+                return;
             }
-        });
+            username = value;
+            prefs.edit().putString("username", username).apply();
+            dialog.dismiss();
+            buildHomeUi();
+            if (hasNearbyPermissions()) startAdvertising();
+        }));
+        dialog.show();
     }
 
-    private void processIncomingFile(long id, Payload payload) {
-        String type = incomingTypes.get(id);
-        if (type == null) return;
-        Uri uri = payload.asFile() == null ? null : payload.asFile().asUri();
-        if (uri == null) return;
-
-        incomingFiles.remove(id);
-        incomingTypes.remove(id);
-
-        if ("AUDIO".equals(type)) {
-            addEvent("Áudio recebido");
-            playAudio(uri);
-        } else if ("PHOTO".equals(type)) {
-            addEvent("Foto recebida");
-            new AlertDialog.Builder(this)
-                    .setTitle("Foto recebida")
-                    .setMessage("Uma foto chegou pelo ViaCom.")
-                    .setPositiveButton("Abrir", (d, w) -> {
-                        try {
-                            Intent i = new Intent(Intent.ACTION_VIEW);
-                            i.setDataAndType(uri, "image/jpeg");
-                            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                            startActivity(i);
-                        } catch (Exception e) {
-                            Toast.makeText(this, "Foto recebida, mas não foi possível abrir automaticamente", Toast.LENGTH_LONG).show();
-                        }
-                    })
-                    .setNegativeButton("Fechar", null)
-                    .show();
+    private void saveMessage(String peer, String text, boolean mine, long ts) {
+        try {
+            JSONArray arr = loadMessages(peer);
+            JSONObject o = new JSONObject();
+            o.put("text", text);
+            o.put("mine", mine);
+            o.put("ts", ts);
+            arr.put(o);
+            prefs.edit().putString(chatKey(peer), arr.toString()).apply();
+            addPeer(peer);
+        } catch (Exception ignored) {
         }
     }
 
-    private void playAudio(Uri uri) {
+    private JSONArray loadMessages(String peer) {
         try {
-            MediaPlayer player = new MediaPlayer();
-            player.setDataSource(this, uri);
-            player.setOnCompletionListener(MediaPlayer::release);
-            player.prepare();
-            player.start();
-            Toast.makeText(this, "Reproduzindo áudio recebido", Toast.LENGTH_SHORT).show();
+            return new JSONArray(prefs.getString(chatKey(peer), "[]"));
         } catch (Exception e) {
-            addEvent("Erro ao reproduzir áudio: " + e.getClass().getSimpleName());
+            return new JSONArray();
         }
     }
 
-    private void toggleRecording() {
-        if (activeEndpointId == null) {
-            ensurePermissionsAndSearch();
-            return;
-        }
-        if (recording) {
-            stopRecordingAndSend();
-            return;
-        }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
-            return;
-        }
-        startRecording();
+    private JSONObject lastMessage(String peer) {
+        JSONArray arr = loadMessages(peer);
+        if (arr.length() == 0) return null;
+        return arr.optJSONObject(arr.length() - 1);
     }
 
-    private void startRecording() {
-        try {
-            recordingFile = new File(getCacheDir(), "viacom_voice_" + System.currentTimeMillis() + ".m4a");
-            recorder = Build.VERSION.SDK_INT >= 31 ? new MediaRecorder(this) : new MediaRecorder();
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            recorder.setAudioChannels(1);
-            recorder.setAudioSamplingRate(16000);
-            recorder.setAudioEncodingBitRate(32000);
-            recorder.setOutputFile(recordingFile.getAbsolutePath());
-            recorder.prepare();
-            recorder.start();
-            recording = true;
-            talkButton.setText("PARAR E ENVIAR\nGRAVANDO...");
-            addEvent("Gravação iniciada");
-        } catch (Exception e) {
-            recording = false;
-            addEvent("Erro no microfone: " + e.getClass().getSimpleName());
-            Toast.makeText(this, "Não foi possível iniciar o microfone", Toast.LENGTH_LONG).show();
-        }
+    private long lastTimestamp(String peer) {
+        JSONObject o = lastMessage(peer);
+        return o == null ? 0 : o.optLong("ts", 0);
     }
 
-    private void stopRecordingAndSend() {
-        if (!recording || recorder == null) return;
-        try {
-            recorder.stop();
-            recorder.reset();
-            recorder.release();
-            recorder = null;
-            recording = false;
-            talkButton.setText("FALAR\nTOQUE PARA INICIAR");
-            sendFile(recordingFile, "AUDIO", "m4a");
-            addEvent("Áudio enviado");
-        } catch (RuntimeException e) {
-            recording = false;
-            talkButton.setText("FALAR\nTOQUE PARA INICIAR");
-            addEvent("Gravação curta demais");
-        }
+    private void addPeer(String peer) {
+        Set<String> peers = new HashSet<>(prefs.getStringSet("peers", Collections.emptySet()));
+        peers.add(normalizePeer(peer));
+        prefs.edit().putStringSet("peers", peers).apply();
     }
 
-    private void capturePhoto() {
-        if (activeEndpointId == null) return;
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERMISSION);
-            return;
-        }
-        try {
-            startActivityForResult(new Intent(MediaStore.ACTION_IMAGE_CAPTURE), REQ_CAMERA_CAPTURE);
-        } catch (Exception e) {
-            Toast.makeText(this, "Câmera indisponível", Toast.LENGTH_SHORT).show();
-        }
+    private String chatKey(String peer) {
+        return "chat_" + Base64.encodeToString(normalizePeer(peer).getBytes(StandardCharsets.UTF_8), Base64.URL_SAFE | Base64.NO_WRAP);
     }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_CAMERA_CAPTURE && resultCode == RESULT_OK && data != null) {
-            Object obj = data.getExtras() == null ? null : data.getExtras().get("data");
-            if (obj instanceof Bitmap) {
-                try {
-                    File f = new File(getCacheDir(), "viacom_photo_" + System.currentTimeMillis() + ".jpg");
-                    try (FileOutputStream out = new FileOutputStream(f)) {
-                        ((Bitmap) obj).compress(Bitmap.CompressFormat.JPEG, 88, out);
-                    }
-                    sendFile(f, "PHOTO", "jpg");
-                    addEvent("Foto enviada");
-                } catch (IOException e) {
-                    addEvent("Erro ao preparar foto");
-                }
-            }
-        }
+    private boolean isPeerConnected(String peer) {
+        String endpoint = nameToEndpoint.get(normalizePeer(peer));
+        return endpoint != null && connectedEndpoints.contains(endpoint);
     }
 
-    private void sendLocation() {
-        if (activeEndpointId == null) return;
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOCATION);
-            return;
-        }
-        LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
-        Location best = null;
-        try {
-            Location gps = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            Location net = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-            best = gps != null ? gps : net;
-            if (gps != null && net != null && net.getTime() > gps.getTime()) best = net;
-        } catch (SecurityException ignored) {}
-
-        if (best != null) {
-            deliverLocation(best);
-            return;
-        }
-
-        connectionDetail.setText("Obtendo localização GPS...");
-        try {
-            lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, new LocationListener() {
-                @Override public void onLocationChanged(Location location) { deliverLocation(location); }
-                @Override public void onProviderEnabled(String provider) {}
-                @Override public void onProviderDisabled(String provider) {}
-                @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
-            }, Looper.getMainLooper());
-        } catch (Exception e) {
-            Toast.makeText(this, "Ative a localização do celular", Toast.LENGTH_LONG).show();
-        }
+    private String normalizePeer(String name) {
+        if (name == null || name.trim().isEmpty()) return "@usuario";
+        String n = name.trim();
+        if (!n.startsWith("@")) n = "@" + n;
+        return n;
     }
 
-    private void deliverLocation(Location location) {
-        String msg = "GPS|" + location.getLatitude() + "|" + location.getLongitude() + "|" + Math.round(location.getAccuracy()) + "|" + displayName;
-        sendBytes(msg);
-        addEvent("Localização enviada • ±" + Math.round(location.getAccuracy()) + " m");
-        String name = connected.getOrDefault(activeEndpointId, "aparelho");
-        connectionDetail.setText("Conectado a " + name + " • localização enviada");
+    private String stripAt(String name) {
+        String n = normalizePeer(name);
+        return n.substring(1);
     }
 
-    private void sendFile(File file, String type, String extension) {
-        if (activeEndpointId == null || file == null || !file.exists()) return;
-        try {
-            Payload payload = Payload.fromFile(file);
-            payload.setFileName("ViaCom_" + type.toLowerCase(Locale.ROOT) + "_" + System.currentTimeMillis() + "." + extension);
-            long id = payload.getId();
-            sendBytes("META|" + id + "|" + type + "|" + displayName);
-            connectionsClient.sendPayload(activeEndpointId, payload)
-                    .addOnFailureListener(e -> runOnUiThread(() -> addEvent("Falha ao enviar " + type.toLowerCase(Locale.ROOT))));
-        } catch (Exception e) {
-            addEvent("Erro ao enviar arquivo: " + e.getClass().getSimpleName());
-        }
+    private String initials(String peer) {
+        String n = stripAt(peer);
+        if (n.isEmpty()) return "L";
+        return n.substring(0, 1).toUpperCase(Locale.ROOT);
     }
 
-    private void sendBytes(String message) {
-        if (activeEndpointId == null) return;
-        connectionsClient.sendPayload(activeEndpointId, Payload.fromBytes(message.getBytes(StandardCharsets.UTF_8)));
+    private String shortTime(long ts) {
+        if (ts <= 0) return "";
+        return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(ts));
+    }
+
+    private void scrollMessagesToBottom() {
+        if (messagesScroll != null) messagesScroll.post(() -> messagesScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        boolean granted = true;
-        for (int r : grantResults) if (r != PackageManager.PERMISSION_GRANTED) granted = false;
-
         if (requestCode == REQ_NEARBY) {
-            if (granted && pendingSearchAfterPermission) {
-                pendingSearchAfterPermission = false;
-                startNearbySearch();
-            } else if (!granted) {
-                addEvent("Permissão de aparelhos próximos negada");
-                Toast.makeText(this, "O ViaCom precisa da permissão 'Aparelhos próximos' para buscar celulares.", Toast.LENGTH_LONG).show();
+            if (hasNearbyPermissions()) {
+                startAdvertising();
+                if (pendingDiscoverAfterPermission) {
+                    pendingDiscoverAfterPermission = false;
+                    startDiscovery();
+                }
+            } else {
+                Toast.makeText(this, "O LIV precisa da permissão Aparelhos próximos para conversar offline.", Toast.LENGTH_LONG).show();
             }
-        } else if (requestCode == REQ_AUDIO && granted) {
-            startRecording();
-        } else if (requestCode == REQ_LOCATION && granted) {
-            sendLocation();
-        } else if (requestCode == REQ_CAMERA_PERMISSION && granted) {
-            capturePhoto();
         }
     }
 
-    private void showNameDialog(boolean searchAfter) {
-        final EditText input = new EditText(this);
-        input.setText(displayName);
-        input.setHint("Nome visível");
-        input.setSingleLine(true);
-        int pad = dp(20);
-        LinearLayout box = new LinearLayout(this);
-        box.setPadding(pad, 0, pad, 0);
-        box.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Nome deste aparelho")
-                .setMessage("Digite o nome que ficará visível para aparelhos próximos.")
-                .setView(box)
-                .setPositiveButton("Salvar", null)
-                .setNegativeButton("Cancelar", null)
-                .create();
-
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            String n = input.getText().toString().trim();
-            if (n.isEmpty()) {
-                input.setError("Digite um nome");
-                return;
-            }
-            displayName = n;
-            prefs.edit().putString("display_name", n).apply();
-            addEvent("Nome do aparelho salvo: " + n);
-            dialog.dismiss();
-            if (searchAfter) ensurePermissionsAndSearch();
-            else if (hasNearbyPermissions()) startAdvertisingOnly();
-        }));
-        dialog.show();
-    }
-
-    private void nearbyError(String stage, Exception e) {
-        searching = false;
-        searchButton.setText("BUSCAR APARELHOS");
-        connectionDetail.setText(stage + " não iniciou. Verifique Bluetooth/Wi‑Fi e as permissões.");
-        addEvent(stage + " falhou: " + e.getClass().getSimpleName());
-        Toast.makeText(this, stage + " falhou. Verifique Bluetooth, Wi‑Fi e 'Aparelhos próximos'.", Toast.LENGTH_LONG).show();
-    }
-
-    private void addEvent(String message) {
-        String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
-        events.add(0, time + "  " + message);
-        while (events.size() > 8) events.remove(events.size() - 1);
-        if (eventsView != null) eventsView.setText(String.join("\n\n", events));
+    @Override
+    public void onBackPressed() {
+        if (inChat) {
+            inChat = false;
+            buildHomeUi();
+        } else if (showNearby) {
+            showNearby = false;
+            buildHomeUi();
+        } else {
+            super.onBackPressed();
+        }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        try { connectionsClient.stopAdvertising(); } catch (Exception ignored) {}
-        try { connectionsClient.stopDiscovery(); } catch (Exception ignored) {}
-        if (recorder != null) {
-            try { recorder.release(); } catch (Exception ignored) {}
+        if (connectionsClient != null) {
+            connectionsClient.stopDiscovery();
+            connectionsClient.stopAdvertising();
+            connectionsClient.stopAllEndpoints();
         }
     }
 
-    private LinearLayout card() {
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.VERTICAL);
-        l.setPadding(dp(18), dp(18), dp(18), dp(18));
-        l.setBackground(roundRect(CARD, Color.rgb(35, 70, 91), 20, 1));
-        return l;
-    }
-
-    private TextView label(String s) {
-        TextView t = text(s, 12, true, Color.rgb(132, 159, 180));
-        t.setLetterSpacing(.12f);
-        t.setPadding(0, 0, 0, dp(6));
-        return t;
-    }
-
-    private TextView text(String s, int sp, boolean bold, int color) {
+    private TextView text(String value, float size, boolean bold, int color) {
         TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(sp);
+        t.setText(value);
+        t.setTextSize(size);
         t.setTextColor(color);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setLineSpacing(0, 1.08f);
         return t;
     }
 
-    private Button primaryButton(String s) {
+    private Button primaryButton(String label) {
         Button b = new Button(this);
-        b.setText(s);
-        b.setTextColor(Color.rgb(218, 255, 252));
+        b.setText(label);
+        b.setTextColor(BG);
         b.setTextSize(14);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setAllCaps(false);
-        b.setBackground(roundRect(Color.rgb(18, 76, 82), TEAL, 14, 1));
+        b.setBackground(roundRect(ACCENT, ACCENT, 18, 0));
         return b;
     }
 
-    private Button smallButton(String s) {
-        Button b = primaryButton(s);
-        b.setTextSize(23);
-        b.setPadding(0, 0, 0, 0);
-        b.setBackground(roundRect(CARD_DARK, Color.rgb(45, 72, 91), 16, 1));
-        return b;
-    }
-
-    private Button actionButton(String s) {
+    private Button compactButton(String label) {
         Button b = new Button(this);
-        b.setText(s);
-        b.setTextColor(TEXT);
-        b.setTextSize(17);
+        b.setText(label);
+        b.setTextColor(ACCENT);
+        b.setTextSize(11);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setAllCaps(false);
-        b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        b.setPadding(dp(20), dp(10), dp(10), dp(10));
-        b.setBackground(roundRect(CARD, Color.rgb(35, 70, 91), 20, 1));
+        b.setBackground(roundRect(SURFACE_2, ACCENT, 15, 1));
         return b;
     }
 
-    private GradientDrawable roundRect(int fill, int stroke, int radiusDp, int strokeDp) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(fill);
-        g.setCornerRadius(dp(radiusDp));
-        if (strokeDp > 0) g.setStroke(dp(strokeDp), stroke);
-        return g;
+    private Button smallButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextColor(TEXT);
+        b.setTextSize(20);
+        b.setAllCaps(false);
+        b.setPadding(0, 0, 0, 0);
+        b.setBackground(roundRect(SURFACE_2, Color.rgb(52, 70, 84), 18, 1));
+        return b;
     }
 
-    private LinearLayout.LayoutParams lpTop(int topDp) {
+    private Button tabButton(String label, boolean active) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(13);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextColor(active ? BG : MUTED);
+        b.setAllCaps(false);
+        b.setBackground(roundRect(active ? ACCENT : SURFACE, active ? ACCENT : SURFACE_2, 15, 1));
+        return b;
+    }
+
+    private LinearLayout card() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(16), dp(15), dp(16), dp(15));
+        c.setBackground(roundRect(SURFACE, Color.rgb(38, 58, 73), 18, 1));
+        return c;
+    }
+
+    private LinearLayout.LayoutParams lpTop(int top) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(topDp);
+        lp.topMargin = dp(top);
         return lp;
     }
 
-    private int dp(int v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
+    private GradientDrawable roundRect(int fill, int stroke, int radius, int strokeWidth) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(fill);
+        d.setCornerRadius(dp(radius));
+        if (strokeWidth > 0) d.setStroke(dp(strokeWidth), stroke);
+        return d;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }
