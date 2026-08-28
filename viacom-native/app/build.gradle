@@ -10,8 +10,8 @@ android {
         applicationId 'com.uriel.viacom.beta016'
         minSdk 26
         targetSdk 35
-        versionCode 200
-        versionName '0.2.0'
+        versionCode 201
+        versionName '0.2.1'
     }
 
     buildTypes {
@@ -30,4 +30,4 @@ dependencies {
     implementation 'com.google.android.gms:play-services-nearby:19.5.0'
 }
 
-// Native Nearby build trigger for ViaCom 0.2.0
+// Native Nearby build: no QR / no WebRTC legacy flow
