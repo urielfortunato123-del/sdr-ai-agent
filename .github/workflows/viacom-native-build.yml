@@ -37,6 +37,18 @@ jobs:
           set -o pipefail
           gradle -p viacom-native :app:assembleRelease --stacktrace 2>&1 | tee build.log
 
+      - name: Collect Android APK signer library
+        if: always()
+        shell: bash
+        run: |
+          APK_SIG=$(find "$HOME/.gradle/caches" -type f -name 'apksig-*.jar' | head -n 1 || true)
+          if [ -n "$APK_SIG" ]; then
+            cp "$APK_SIG" apksig.jar
+            echo "Collected $APK_SIG"
+          else
+            echo "apksig jar not found"
+          fi
+
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,6 +56,7 @@ jobs:
           name: liv-messenger-0.4.0-build
           path: |
             build.log
+            apksig.jar
             viacom-native/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: ignore
           retention-days: 1
