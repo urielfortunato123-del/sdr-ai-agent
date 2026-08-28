@@ -28,7 +28,7 @@
         android:allowBackup="true"
         android:icon="@drawable/ic_viacom"
         android:roundIcon="@drawable/ic_viacom"
-        android:label="ViaCom"
+        android:label="ViaCom Nearby"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
