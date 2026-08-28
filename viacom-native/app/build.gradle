@@ -30,4 +30,4 @@ dependencies {
     implementation 'com.google.android.gms:play-services-nearby:19.5.0'
 }
 
-// LIV Messenger 0.4.1 UI redesign + Nearby diagnostics
+// LIV Messenger 0.4.1 UI redesign + Nearby diagnostics // build
