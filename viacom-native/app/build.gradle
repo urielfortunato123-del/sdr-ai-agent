@@ -10,8 +10,8 @@ android {
         applicationId 'com.uriel.livmessenger'
         minSdk 26
         targetSdk 35
-        versionCode 300
-        versionName '0.3.0'
+        versionCode 400
+        versionName '0.4.0'
     }
 
     buildTypes {
@@ -30,4 +30,4 @@ dependencies {
     implementation 'com.google.android.gms:play-services-nearby:19.5.0'
 }
 
-// LIV Messenger 0.3.0 offline chat build
+// LIV Messenger 0.4.0 clean-room messenger shell + offline Nearby transport
